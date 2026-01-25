@@ -59,3 +59,25 @@ $mensajes = @(
     "❤️ I love you.",
     "🕶️ If you see me smiling, I probably broke production."
 )
+```
+## 🗑️ Uninstallation
+
+If you wish to remove the program completely, follow these steps:
+
+1.  **Stop the script:**
+    * Close the PowerShell window displaying the heart.
+
+2.  **Remove the Startup Shortcut:**
+    * Press `Win + R`, type `shell:startup`, and press **Enter**.
+    * Delete the shortcut file created by the script.
+
+3.  **Remove the Data Files:**
+    * Press `Win + R`, type `%localappdata%`, and press **Enter**.
+    * Locate the project folder (based on the name defined in the script) and delete it.
+
+## ⚠️ Disclaimer
+
+This script is intended as a harmless, loving gesture. It runs in user-space and does not require administrative privileges to run (though it might require permission to execute scripts depending on the computer's security policy).
+
+> **Note:** If execution is blocked, you may need to open PowerShell as Administrator and run `Set-ExecutionPolicy RemoteSigned` temporarily to allow the installation.
+

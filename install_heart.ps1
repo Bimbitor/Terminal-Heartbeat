@@ -15,7 +15,7 @@ $scriptPath = Join-Path $folder $scriptName
 $shortcutPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\$projectName.lnk"
 
 # --- API URL (change this to your Vercel deployment) ---
-$apiUrl = "https://terminal-heartbeat.vercel.app"
+$apiUrl = "https://web-three-pi-68.vercel.app"
 
 # =============================================================================
 #  CLEANUP — Kill running process + remove all files
@@ -87,17 +87,14 @@ New-Item -ItemType Directory -Path $folder | Out-Null
 $scriptContent = @'
 # =============================================================================
 #  Terminal Heartbeat v2.0 — System Tray Client
-#  Un corazon que late en silencio, esperando tu click.
 # =============================================================================
 
-# --- Configuration ---
 $apiBase = "__API_BASE__"
 
-# --- Load Assemblies ---
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# --- Hide Console Window (P/Invoke) ---
+# --- Hide Console Window ---
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -110,16 +107,15 @@ public class Win32 {
     public static extern bool DestroyIcon(IntPtr hIcon);
 }
 "@
-$consoleHwnd = [Win32]::GetConsoleWindow()
-[Win32]::ShowWindow($consoleHwnd, 0) | Out-Null
+[Win32]::ShowWindow([Win32]::GetConsoleWindow(), 0) | Out-Null
 
 # =============================================================================
-#  HEART ICON GENERATOR (GDI+ Parametric Curve, 32x32)
+#  HEART ICON (GDI+ 32x32)
 # =============================================================================
 function New-HeartIcon {
-    param([float]$scale = 1.0)
+    param([float]$scale = 1.0, [int]$size = 32, [System.Drawing.Color]$color)
+    if (-not $color) { $color = [System.Drawing.Color]::FromArgb(220, 30, 50) }
 
-    $size = 32
     $bmp = New-Object System.Drawing.Bitmap($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
@@ -127,22 +123,19 @@ function New-HeartIcon {
     $g.Clear([System.Drawing.Color]::Transparent)
 
     $points = New-Object System.Collections.ArrayList
-    $steps = 120
+    $steps = 150
+    $fitScale = ($size / 38.0) * $scale
     for ($i = 0; $i -lt $steps; $i++) {
         $t = ($i / $steps) * 2 * [Math]::PI
         $rawX = 16 * [Math]::Pow([Math]::Sin($t), 3)
         $rawY = 13 * [Math]::Cos($t) - 5 * [Math]::Cos(2 * $t) - 2 * [Math]::Cos(3 * $t) - [Math]::Cos(4 * $t)
-
-        $px = ($rawX * $scale * 0.42) + ($size / 2)
-        $py = (-$rawY * $scale * 0.42) + ($size / 2) + 1
-
+        $px = ($rawX * $fitScale) + ($size / 2)
+        $py = (-$rawY * $fitScale) + ($size / 2) + ($size * 0.03)
         [void]$points.Add([System.Drawing.PointF]::new([float]$px, [float]$py))
     }
 
-    $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(220, 30, 50))
-    $pointArray = $points.ToArray([System.Drawing.PointF])
-    $g.FillClosedCurve($brush, $pointArray, [System.Drawing.Drawing2D.FillMode]::Winding, 0.1)
-
+    $brush = New-Object System.Drawing.SolidBrush($color)
+    $g.FillClosedCurve($brush, $points.ToArray([System.Drawing.PointF]), [System.Drawing.Drawing2D.FillMode]::Winding, 0.05)
     $brush.Dispose()
     $g.Dispose()
 
@@ -150,20 +143,18 @@ function New-HeartIcon {
     $icon = [System.Drawing.Icon]::FromHandle($hIcon).Clone()
     [Win32]::DestroyIcon($hIcon) | Out-Null
     $bmp.Dispose()
-
     return $icon
 }
 
-# Generate 3 frames for the pulse animation
 $script:icons = @(
-    (New-HeartIcon -scale 0.82),
+    (New-HeartIcon -scale 0.88),
     (New-HeartIcon -scale 1.0),
-    (New-HeartIcon -scale 1.10)
+    (New-HeartIcon -scale 1.12)
 )
 $script:frameIndex = 0
 
 # =============================================================================
-#  DATA FETCHING & OFFLINE CACHE
+#  DATA FETCHING & CACHE
 # =============================================================================
 $script:dataFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:cacheFile = Join-Path $script:dataFolder "cache.json"
@@ -186,7 +177,6 @@ function Get-HeartData {
     try {
         $msgResp = Invoke-RestMethod -Uri "$apiBase/api/messages" -TimeoutSec 5 -ErrorAction Stop
         $grtResp = Invoke-RestMethod -Uri "$apiBase/api/greetings" -TimeoutSec 5 -ErrorAction Stop
-
         $data = @{
             messages  = @($msgResp.messages | ForEach-Object { $_.text })
             greetings = @{
@@ -203,7 +193,7 @@ function Get-HeartData {
         if (Test-Path $script:cacheFile) {
             try {
                 $cached = Get-Content $script:cacheFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                $result = @{
+                return @{
                     messages  = @($cached.messages)
                     greetings = @{
                         morning   = @($cached.greetings.morning)
@@ -211,9 +201,7 @@ function Get-HeartData {
                         night     = @($cached.greetings.night)
                     }
                 }
-                return $result
-            }
-            catch {}
+            } catch {}
         }
         return $script:defaultData
     }
@@ -226,13 +214,19 @@ function Get-TimePeriod {
     else { return "night" }
 }
 
-# Initial data fetch
 $script:heartData = Get-HeartData
+$script:currentPopup = $null
 
 # =============================================================================
-#  POPUP WINDOW
+#  POPUP
 # =============================================================================
 function Show-Popup {
+    # Close existing popup
+    if ($script:currentPopup -and -not $script:currentPopup.IsDisposed) {
+        $script:currentPopup.Close()
+        $script:currentPopup = $null
+    }
+
     $period = Get-TimePeriod
     $greetingList = @($script:heartData.greetings.$period)
     if ($greetingList.Count -eq 0) { $greetingList = @("Hola, mi amor") }
@@ -242,28 +236,29 @@ function Show-Popup {
     if ($messageList.Count -eq 0) { $messageList = @("Te quiero") }
     $message = Get-Random -InputObject $messageList
 
-    $popupW = 360
-    $popupH = 180
+    $popupW = 400
+    $popupH = 260
 
+    # Position above tray
     $cursorPos = [System.Windows.Forms.Cursor]::Position
     $screen = [System.Windows.Forms.Screen]::FromPoint($cursorPos).WorkingArea
-    $x = [Math]::Min($cursorPos.X - ($popupW / 2), $screen.Right - $popupW - 8)
-    $x = [Math]::Max($x, $screen.Left + 8)
-    $y = $screen.Bottom - $popupH - 12
+    $x = [Math]::Min($cursorPos.X - ($popupW / 2), $screen.Right - $popupW - 12)
+    $x = [Math]::Max($x, $screen.Left + 12)
+    $y = $screen.Bottom - $popupH - 16
 
     $popup = New-Object System.Windows.Forms.Form
     $popup.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
     $popup.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
     $popup.Location = New-Object System.Drawing.Point([int]$x, [int]$y)
     $popup.Size = New-Object System.Drawing.Size($popupW, $popupH)
-    $popup.BackColor = [System.Drawing.Color]::FromArgb(18, 18, 18)
+    $popup.BackColor = [System.Drawing.Color]::FromArgb(16, 16, 16)
     $popup.ShowInTaskbar = $false
     $popup.TopMost = $true
-    $popup.Opacity = 0.96
+    $popup.Opacity = 0.97
 
     # Rounded corners
     $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $r = 16
+    $r = 20
     $path.AddArc(0, 0, $r, $r, 180, 90)
     $path.AddArc($popupW - $r - 1, 0, $r, $r, 270, 90)
     $path.AddArc($popupW - $r - 1, $popupH - $r - 1, $r, $r, 0, 90)
@@ -271,95 +266,130 @@ function Show-Popup {
     $path.CloseFigure()
     $popup.Region = New-Object System.Drawing.Region($path)
 
-    # Custom paint for border glow
+    # Paint: border glow + large heart watermark
     $popup.Add_Paint({
         param($s, $e)
-        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(100, 220, 30, 50), 1.5)
-        $borderPath = New-Object System.Drawing.Drawing2D.GraphicsPath
-        $br = 16
-        $bw = $s.ClientSize.Width
-        $bh = $s.ClientSize.Height
-        $borderPath.AddArc(1, 1, $br, $br, 180, 90)
-        $borderPath.AddArc($bw - $br - 2, 1, $br, $br, 270, 90)
-        $borderPath.AddArc($bw - $br - 2, $bh - $br - 2, $br, $br, 0, 90)
-        $borderPath.AddArc(1, $bh - $br - 2, $br, $br, 90, 90)
-        $borderPath.CloseFigure()
-        $e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-        $e.Graphics.DrawPath($pen, $borderPath)
+        $g = $e.Graphics
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $w = $s.ClientSize.Width
+        $h = $s.ClientSize.Height
+
+        # Draw large decorative heart (watermark, bottom-right)
+        $heartPoints = New-Object System.Collections.ArrayList
+        $heartSize = 80
+        $steps = 120
+        $cx = $w - 60
+        $cy = $h - 50
+        for ($i = 0; $i -lt $steps; $i++) {
+            $t = ($i / $steps) * 2 * [Math]::PI
+            $rx = 16 * [Math]::Pow([Math]::Sin($t), 3)
+            $ry = 13 * [Math]::Cos($t) - 5 * [Math]::Cos(2 * $t) - 2 * [Math]::Cos(3 * $t) - [Math]::Cos(4 * $t)
+            $sc = $heartSize / 38.0
+            $px = ($rx * $sc) + $cx
+            $py = (-$ry * $sc) + $cy
+            [void]$heartPoints.Add([System.Drawing.PointF]::new([float]$px, [float]$py))
+        }
+        $heartBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(18, 220, 30, 50))
+        $g.FillClosedCurve($heartBrush, $heartPoints.ToArray([System.Drawing.PointF]), [System.Drawing.Drawing2D.FillMode]::Winding, 0.05)
+        $heartBrush.Dispose()
+
+        # Border
+        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(70, 220, 30, 50), 1.5)
+        $bp = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $br = 20
+        $bp.AddArc(1, 1, $br, $br, 180, 90)
+        $bp.AddArc($w - $br - 2, 1, $br, $br, 270, 90)
+        $bp.AddArc($w - $br - 2, $h - $br - 2, $br, $br, 0, 90)
+        $bp.AddArc(1, $h - $br - 2, $br, $br, 90, 90)
+        $bp.CloseFigure()
+        $g.DrawPath($pen, $bp)
         $pen.Dispose()
-        $borderPath.Dispose()
+        $bp.Dispose()
+
+        # Top accent line
+        $accentPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 220, 30, 50), 3)
+        $g.DrawLine($accentPen, 30, 0, ($w - 30), 0)
+        $accentPen.Dispose()
     })
 
-    # Greeting label
+    # Close button (X)
+    $btnClose = New-Object System.Windows.Forms.Label
+    $btnClose.Text = [char]0x2715
+    $btnClose.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $btnClose.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100)
+    $btnClose.BackColor = [System.Drawing.Color]::Transparent
+    $btnClose.Location = New-Object System.Drawing.Point(($popupW - 34), 8)
+    $btnClose.Size = New-Object System.Drawing.Size(22, 22)
+    $btnClose.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $btnClose.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnClose.Add_Click({ $this.FindForm().Close() })
+    $btnClose.Add_MouseEnter({ $btnClose.ForeColor = [System.Drawing.Color]::FromArgb(220, 30, 50) })
+    $btnClose.Add_MouseLeave({ $btnClose.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100) })
+    $popup.Controls.Add($btnClose)
+
+    # Small heart icon beside greeting
+    $lblHeartIcon = New-Object System.Windows.Forms.Label
+    $lblHeartIcon.Text = [char]0x2665
+    $lblHeartIcon.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 16)
+    $lblHeartIcon.ForeColor = [System.Drawing.Color]::FromArgb(220, 30, 50)
+    $lblHeartIcon.BackColor = [System.Drawing.Color]::Transparent
+    $lblHeartIcon.Location = New-Object System.Drawing.Point(24, 18)
+    $lblHeartIcon.Size = New-Object System.Drawing.Size(30, 30)
+    $popup.Controls.Add($lblHeartIcon)
+
+    # Greeting
     $lblGreeting = New-Object System.Windows.Forms.Label
     $lblGreeting.Text = $greeting
-    $lblGreeting.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $lblGreeting.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
     $lblGreeting.ForeColor = [System.Drawing.Color]::FromArgb(220, 30, 50)
     $lblGreeting.BackColor = [System.Drawing.Color]::Transparent
-    $lblGreeting.Location = New-Object System.Drawing.Point(24, 20)
-    $lblGreeting.Size = New-Object System.Drawing.Size(($popupW - 48), 30)
+    $lblGreeting.Location = New-Object System.Drawing.Point(56, 18)
+    $lblGreeting.Size = New-Object System.Drawing.Size(($popupW - 100), 32)
     $lblGreeting.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
     $popup.Controls.Add($lblGreeting)
 
     # Separator
-    $separator = New-Object System.Windows.Forms.Panel
-    $separator.BackColor = [System.Drawing.Color]::FromArgb(60, 220, 30, 50)
-    $separator.Location = New-Object System.Drawing.Point(24, 58)
-    $separator.Size = New-Object System.Drawing.Size(($popupW - 48), 1)
-    $popup.Controls.Add($separator)
+    $sep = New-Object System.Windows.Forms.Panel
+    $sep.BackColor = [System.Drawing.Color]::FromArgb(40, 220, 30, 50)
+    $sep.Location = New-Object System.Drawing.Point(28, 58)
+    $sep.Size = New-Object System.Drawing.Size(($popupW - 56), 1)
+    $popup.Controls.Add($sep)
 
-    # Message label
+    # Message (supports emoji + multiline via \n in the text)
     $lblMessage = New-Object System.Windows.Forms.Label
     $lblMessage.Text = $message
-    $lblMessage.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Regular)
-    $lblMessage.ForeColor = [System.Drawing.Color]::FromArgb(230, 230, 230)
+    $lblMessage.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 11.5, [System.Drawing.FontStyle]::Regular)
+    $lblMessage.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
     $lblMessage.BackColor = [System.Drawing.Color]::Transparent
-    $lblMessage.Location = New-Object System.Drawing.Point(24, 72)
-    $lblMessage.Size = New-Object System.Drawing.Size(($popupW - 48), 80)
+    $lblMessage.Location = New-Object System.Drawing.Point(28, 72)
+    $lblMessage.Size = New-Object System.Drawing.Size(($popupW - 56), 160)
     $lblMessage.TextAlign = [System.Drawing.ContentAlignment]::TopLeft
     $popup.Controls.Add($lblMessage)
 
-    # Small heart decoration bottom-right
-    $lblHeart = New-Object System.Windows.Forms.Label
-    $lblHeart.Text = [char]0x2665
-    $lblHeart.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $lblHeart.ForeColor = [System.Drawing.Color]::FromArgb(80, 220, 30, 50)
-    $lblHeart.BackColor = [System.Drawing.Color]::Transparent
-    $lblHeart.Location = New-Object System.Drawing.Point(($popupW - 36), ($popupH - 28))
-    $lblHeart.Size = New-Object System.Drawing.Size(20, 20)
-    $popup.Controls.Add($lblHeart)
+    # Close when clicking outside
+    $popup.Add_Deactivate({ $this.Close() })
 
-    # Close on deactivate
-    $popup.Add_Deactivate({ $popup.Close() })
+    # Track this popup
+    $script:currentPopup = $popup
 
+    # Activate properly so Deactivate fires
     $popup.Show()
+    $popup.Activate()
 }
 
 # =============================================================================
-#  NOTIFY ICON + CONTEXT MENU
+#  NOTIFY ICON
 # =============================================================================
 $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
 $notifyIcon.Icon = $script:icons[1]
 $notifyIcon.Visible = $true
 $notifyIcon.Text = "Terminal Heartbeat"
 
-# Context menu
+# Context menu — only Close
 $contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
 $contextMenu.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-$contextMenu.ForeColor = [System.Drawing.Color]::FromArgb(230, 230, 230)
+$contextMenu.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
 $contextMenu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System
-
-$menuNew = New-Object System.Windows.Forms.ToolStripMenuItem
-$menuNew.Text = "Nuevo mensaje"
-$menuNew.ForeColor = [System.Drawing.Color]::FromArgb(230, 230, 230)
-$menuNew.Add_Click({ Show-Popup })
-
-$menuRefresh = New-Object System.Windows.Forms.ToolStripMenuItem
-$menuRefresh.Text = "Actualizar datos"
-$menuRefresh.ForeColor = [System.Drawing.Color]::FromArgb(230, 230, 230)
-$menuRefresh.Add_Click({ $script:heartData = Get-HeartData })
-
-$menuSep = New-Object System.Windows.Forms.ToolStripSeparator
 
 $menuClose = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuClose.Text = "Cerrar"
@@ -369,14 +399,10 @@ $menuClose.Add_Click({
     $notifyIcon.Dispose()
     [System.Windows.Forms.Application]::Exit()
 })
-
-[void]$contextMenu.Items.Add($menuNew)
-[void]$contextMenu.Items.Add($menuRefresh)
-[void]$contextMenu.Items.Add($menuSep)
 [void]$contextMenu.Items.Add($menuClose)
 $notifyIcon.ContextMenuStrip = $contextMenu
 
-# Left-click opens popup
+# Left-click = open popup
 $notifyIcon.Add_MouseClick({
     param($s, $e)
     if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
@@ -385,8 +411,9 @@ $notifyIcon.Add_MouseClick({
 })
 
 # =============================================================================
-#  ANIMATION TIMER (heartbeat pulse)
+#  TIMERS
 # =============================================================================
+# Animation (heartbeat pulse)
 $animTimer = New-Object System.Windows.Forms.Timer
 $animTimer.Interval = 500
 $animTimer.Add_Tick({
@@ -395,9 +422,7 @@ $animTimer.Add_Tick({
 })
 $animTimer.Start()
 
-# =============================================================================
-#  REFRESH TIMER (fetch new data every hour)
-# =============================================================================
+# Refresh data every hour
 $refreshTimer = New-Object System.Windows.Forms.Timer
 $refreshTimer.Interval = 3600000
 $refreshTimer.Add_Tick({ $script:heartData = Get-HeartData })

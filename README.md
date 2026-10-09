@@ -95,7 +95,7 @@ This removes:
 1. Go to your Vercel deployment `/admin`.
 2. Log in with your password.
 3. Add, edit, or delete messages and greetings.
-4. The app fetches fresh data every hour, or you can force a refresh via right-click → **Actualizar datos**.
+4. The app fetches fresh data every hour automatically.
 
 ## Customization
 

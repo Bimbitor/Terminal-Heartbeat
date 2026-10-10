@@ -86,10 +86,20 @@ $script:defaultData = @{
     }
 }
 
+function Invoke-Utf8Rest {
+    param([string]$Uri)
+    $wc = New-Object System.Net.WebClient
+    $wc.Encoding = [System.Text.Encoding]::UTF8
+    try {
+        $json = $wc.DownloadString($Uri)
+        return ($json | ConvertFrom-Json)
+    } finally { $wc.Dispose() }
+}
+
 function Get-HeartData {
     try {
-        $msgResp = Invoke-RestMethod -Uri "$apiBase/api/messages" -TimeoutSec 5 -ErrorAction Stop
-        $grtResp = Invoke-RestMethod -Uri "$apiBase/api/greetings" -TimeoutSec 5 -ErrorAction Stop
+        $msgResp = Invoke-Utf8Rest -Uri "$apiBase/api/messages"
+        $grtResp = Invoke-Utf8Rest -Uri "$apiBase/api/greetings"
         $data = @{
             messages  = @($msgResp.messages | ForEach-Object { $_.text })
             greetings = @{

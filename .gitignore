@@ -6,3 +6,4 @@ web/.vercel
 web/.agents/
 web/.claude/
 web/skills-lock.json
+cache.json

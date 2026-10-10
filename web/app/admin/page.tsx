@@ -111,7 +111,7 @@ const styles = {
   } as React.CSSProperties,
   item: {
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: "0.75rem",
     padding: "0.6rem 0.8rem",
     backgroundColor: "#141414",
@@ -121,6 +121,23 @@ const styles = {
   itemText: {
     flex: 1,
     fontSize: "0.95rem",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+  } as React.CSSProperties,
+  textarea: {
+    width: "100%",
+    padding: "0.7rem 1rem",
+    backgroundColor: "#1a1a1a",
+    border: "1px solid #333",
+    borderRadius: "8px",
+    color: "#e6e6e6",
+    fontSize: "0.95rem",
+    outline: "none",
+    boxSizing: "border-box" as const,
+    resize: "vertical" as const,
+    minHeight: "60px",
+    fontFamily: "'Segoe UI', sans-serif",
+    lineHeight: "1.5",
   } as React.CSSProperties,
   addRow: {
     display: "flex",
@@ -150,6 +167,8 @@ const styles = {
     color: "#e6e6e6",
     fontSize: "0.95rem",
     lineHeight: 1.5,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
   } as React.CSSProperties,
 };
 
@@ -383,58 +402,59 @@ export default function AdminPage() {
         {messages.map((msg) => (
           <div key={msg.id} style={styles.item}>
             {editingId === msg.id ? (
-              <>
-                <input
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <textarea
                   value={editText}
                   onChange={(e) => setEditText(e.target.value)}
-                  onKeyDown={(e) =>
-                    e.key === "Enter" && updateMessage(msg.id)
-                  }
-                  style={{ ...styles.input, flex: 1 }}
+                  style={{ ...styles.textarea, flex: 1 }}
                   autoFocus
                 />
-                <button
-                  onClick={() => updateMessage(msg.id)}
-                  style={styles.btnSmall}
-                >
-                  Guardar
-                </button>
-                <button
-                  onClick={() => setEditingId(null)}
-                  style={styles.btnSmall}
-                >
-                  Cancelar
-                </button>
-              </>
+                <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+                  <button
+                    onClick={() => setEditingId(null)}
+                    style={styles.btnSmall}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={() => updateMessage(msg.id)}
+                    style={styles.btn}
+                  >
+                    Guardar
+                  </button>
+                </div>
+              </div>
             ) : (
               <>
                 <span style={styles.itemText}>{msg.text}</span>
-                <button
-                  onClick={() => {
-                    setEditingId(msg.id);
-                    setEditText(msg.text);
-                  }}
-                  style={styles.btnSmall}
-                >
-                  Editar
-                </button>
-                <button
-                  onClick={() => deleteMessage(msg.id)}
-                  style={styles.btnDanger}
-                >
-                  Borrar
-                </button>
+                <div style={{ display: "flex", gap: "0.5rem", flexShrink: 0 }}>
+                  <button
+                    onClick={() => {
+                      setEditingId(msg.id);
+                      setEditText(msg.text);
+                    }}
+                    style={styles.btnSmall}
+                  >
+                    Editar
+                  </button>
+                  <button
+                    onClick={() => deleteMessage(msg.id)}
+                    style={styles.btnDanger}
+                  >
+                    Borrar
+                  </button>
+                </div>
               </>
             )}
           </div>
         ))}
-        <div style={styles.addRow}>
-          <input
-            placeholder="Nuevo mensaje..."
+        <div style={{ marginTop: "0.75rem" }}>
+          <textarea
+            placeholder="Nuevo mensaje... (Enter para nueva linea)"
             value={newMsg}
             onChange={(e) => setNewMsg(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addMessage()}
-            style={{ ...styles.input, flex: 1 }}
+            style={{ ...styles.textarea, width: "100%", marginBottom: "0.5rem" }}
+            rows={3}
           />
           <button onClick={addMessage} style={styles.btn}>
             Agregar

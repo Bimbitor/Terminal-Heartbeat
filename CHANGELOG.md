@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [v2.0.1] - 2026-10-16
+
+### Fixed
+
+- **The installer could terminate unrelated PowerShell processes.** The cleanup pass
+  filtered running processes on a condition that never referenced the process being
+  tested, so it matched every `powershell.exe` on the machine rather than just the
+  running instance. Removed; the remaining pass matches on the script path in the
+  command line, which is the only reliable discriminator.
+
 ## [v2.0] - 2026-10-16
 
 A full rewrite of the client, from a visible terminal window to a discreet system tray
@@ -70,5 +80,6 @@ heart animation and one of twelve hardcoded messages.
 
 Its twelve messages were migrated into the v2.0 backend and are still in rotation.
 
+[v2.0.1]: https://github.com/Bimbitor/Terminal-Heartbeat/releases/tag/v2.0.1
 [v2.0]: https://github.com/Bimbitor/Terminal-Heartbeat/releases/tag/v2.0
 [v1.0]: https://github.com/Bimbitor/Terminal-Heartbeat/releases/tag/v1.0

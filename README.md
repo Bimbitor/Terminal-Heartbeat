@@ -80,14 +80,14 @@ powershell -ExecutionPolicy Bypass -File install_heart.ps1 -Uninstall
 ```
 
 This removes:
-- The startup shortcut
+- The auto-start registry entry (`HKCU\Run`)
 - The data folder (`%LOCALAPPDATA%\TerminalHeartbeat\`)
 - Kills the running process (if active)
 
 **Manual uninstall** (if you don't have the installer):
 
 1. Close the heart (right-click tray icon → Cerrar).
-2. Press `Win + R`, type `shell:startup`, delete the `TerminalHeartbeat` shortcut.
+2. Press `Win + R`, type `regedit`, navigate to `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, delete `TerminalHeartbeat`.
 3. Press `Win + R`, type `%localappdata%`, delete the `TerminalHeartbeat` folder.
 
 ## Updating Messages Remotely

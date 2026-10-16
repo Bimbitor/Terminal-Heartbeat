@@ -12,7 +12,9 @@ $projectName = "TerminalHeartbeat"
 $folder = "$env:USERPROFILE\AppData\Local\$projectName"
 $scriptName = "$projectName.ps1"
 $scriptPath = Join-Path $folder $scriptName
-$shortcutPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\$projectName.lnk"
+$launcherPath = Join-Path $folder "launcher.vbs"
+$regKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$oldShortcutPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\$projectName.lnk"
 
 # --- API URL (change this to your Vercel deployment) ---
 $apiUrl = "https://web-three-pi-68.vercel.app"
@@ -41,9 +43,12 @@ function Remove-HeartbeatInstallation {
 
     Start-Sleep -Milliseconds 500
 
-    # Remove shortcut
-    if (Test-Path $shortcutPath) {
-        Remove-Item -Path $shortcutPath -Force -ErrorAction SilentlyContinue
+    # Remove registry auto-start entry
+    Remove-ItemProperty -Path $regKey -Name $projectName -Force -ErrorAction SilentlyContinue
+
+    # Remove old-style startup shortcut (v2.0 legacy)
+    if (Test-Path $oldShortcutPath) {
+        Remove-Item -Path $oldShortcutPath -Force -ErrorAction SilentlyContinue
     }
 
     # Remove data folder
@@ -451,14 +456,22 @@ $scriptContent = $scriptContent.Replace("__API_BASE__", $apiUrl)
 $scriptContent | Set-Content -Path $scriptPath -Encoding UTF8 -Force
 
 # =============================================================================
-#  CREATE STARTUP SHORTCUT
+#  CREATE VBS LAUNCHER + REGISTRY AUTO-START
 # =============================================================================
-$WshShell = New-Object -ComObject WScript.Shell
-$ShortcutObj = $WshShell.CreateShortcut($shortcutPath)
-$ShortcutObj.TargetPath = "powershell.exe"
-$ShortcutObj.Arguments = "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$scriptPath`""
-$ShortcutObj.WindowStyle = 7  # Minimized
-$ShortcutObj.Save()
+# VBS launcher runs PowerShell completely hidden (no console flash)
+$vbsContent = @"
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File """ & Replace(WScript.ScriptFullName, "launcher.vbs", "$scriptName") & """", 0, False
+"@
+$vbsContent | Set-Content -Path $launcherPath -Encoding ASCII -Force
+
+# Remove old-style startup shortcut if upgrading
+if (Test-Path $oldShortcutPath) {
+    Remove-Item -Path $oldShortcutPath -Force -ErrorAction SilentlyContinue
+}
+
+# Register in HKCU\Run (standard Windows auto-start, no admin needed)
+Set-ItemProperty -Path $regKey -Name $projectName -Value "wscript.exe `"$launcherPath`"" -Force
 
 # =============================================================================
 #  CONFIRMATION
@@ -467,7 +480,7 @@ Write-Host ""
 Write-Host "  Instalacion completada." -ForegroundColor Green
 Write-Host ""
 Write-Host "  Archivos:   $folder" -ForegroundColor DarkGray
-Write-Host "  Startup:    $shortcutPath" -ForegroundColor DarkGray
+Write-Host "  Autostart:  Registro HKCU\Run" -ForegroundColor DarkGray
 Write-Host "  API:        $apiUrl" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  El corazon aparecera en tu bandeja del sistema" -ForegroundColor White
@@ -480,7 +493,7 @@ Write-Host ""
 # Ask if the user wants to launch it now
 $response = Read-Host "  Quieres probarlo ahora? (s/n)"
 if ($response -eq "s" -or $response -eq "S" -or $response -eq "si") {
-    Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$scriptPath`""
+    Start-Process wscript.exe -ArgumentList "`"$launcherPath`""
     Write-Host ""
     Write-Host "  Lanzado! Busca el corazon en la bandeja del sistema." -ForegroundColor Red
     Write-Host ""

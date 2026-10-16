@@ -25,18 +25,10 @@ $apiUrl = "https://web-three-pi-68.vercel.app"
 #  CLEANUP - Kill running process + remove all files
 # =============================================================================
 function Remove-HeartbeatInstallation {
-    # Kill any running instance
-    Get-Process powershell -ErrorAction SilentlyContinue | Where-Object {
-        try {
-            $_.MainModule.FileName -and
-            (Get-Content (Join-Path $folder $scriptName) -ErrorAction SilentlyContinue) -ne $null -and
-            $_.Id -ne $PID
-        } catch { $false }
-    } | ForEach-Object {
-        try { $_ | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
-    }
-
-    # Also try matching by command line
+    # Kill any running instance, matching on the script path in the command line.
+    # This is the only safe way to identify it: every instance, v1.0 included, is
+    # a plain powershell.exe, so the path is what distinguishes ours from the
+    # user's own PowerShell windows.
     Get-WmiObject Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -match [regex]::Escape($scriptPath) -and $_.ProcessId -ne $PID } |
         ForEach-Object {

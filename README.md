@@ -78,8 +78,8 @@ No manual cleanup needed. This works across any version (v1.0 → v2.0, v2.0 →
 Right-click the heart → **Desinstalar** → confirm. Everything is removed immediately.
 
 Because the app runs from the folder it has to delete, the cleanup is handed to a
-small detached helper that waits for the process to exit, removes every trace, and
-then deletes itself.
+small detached PowerShell helper that waits for the process to exit, removes every
+trace, and then deletes itself.
 
 **From the installer:**
 
@@ -96,7 +96,7 @@ Either method removes:
 **Manual uninstall** (last resort):
 
 1. Close the heart (right-click tray icon → Cerrar).
-2. Press `Win + R`, type `shell:startup`, delete `TerminalHeartbeat.vbs`.
+2. Press `Win + R`, type `shell:startup`, delete `TerminalHeartbeat.lnk`.
 3. Press `Win + R`, type `%localappdata%`, delete the `TerminalHeartbeat` folder.
 
 ## Updating Messages Remotely
@@ -123,16 +123,20 @@ The popup uses a dark theme (background `#121212`, red accents `#dc1e32`, white 
 
 ## Startup Behavior
 
-Auto-start uses a `.vbs` launcher in the user's Startup folder (`shell:startup`), which
-runs PowerShell fully hidden — no console window, no flash.
+Auto-start uses a standard `.lnk` shortcut in the user's Startup folder
+(`shell:startup`) that launches `powershell.exe` with `-WindowStyle Hidden`.
+
+A shortcut is used rather than a `.vbs` launcher because it depends on nothing beyond
+PowerShell itself. A `.vbs` needs Windows Script Host, which some machines disable by
+policy. A bare `.ps1` is not an option at all: Windows maps `.ps1` to *Edit*, so one
+placed in the Startup folder opens in Notepad instead of running.
 
 Two details matter for it to work reliably at logon:
 
 - **25-second delay.** At logon the notification area does not accept tray icons for the
   first few seconds; an icon registered too early is silently dropped and never appears.
-  The launcher waits before starting. Passing any argument skips the wait
-  (`wscript TerminalHeartbeat.vbs now`), which is what the installer does when launching
-  immediately.
+  The shortcut passes `-Startup`, which makes the client wait before registering. Launching
+  without that switch starts immediately, which is what the installer does.
 - **The icon is created before any network call.** Messages load from the local cache
   first, and the API fetch happens 3 seconds later on a timer. A slow or absent network
   at boot can delay the *messages*, never the heart itself.

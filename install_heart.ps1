@@ -13,7 +13,9 @@ $folder = "$env:USERPROFILE\AppData\Local\$projectName"
 $scriptName = "$projectName.ps1"
 $scriptPath = Join-Path $folder $scriptName
 $startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
-$startupVbs = Join-Path $startupFolder "$projectName.vbs"
+$startupLnk = Join-Path $startupFolder "$projectName.lnk"
+$legacyStartupVbs = Join-Path $startupFolder "$projectName.vbs"
+$powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
 # --- API URL (change this to your Vercel deployment) ---
 $apiUrl = "https://web-three-pi-68.vercel.app"
@@ -42,14 +44,13 @@ function Remove-HeartbeatInstallation {
 
     Start-Sleep -Milliseconds 500
 
-    # Remove startup VBS
-    if (Test-Path $startupVbs) {
-        Remove-Item -Path $startupVbs -Force -ErrorAction SilentlyContinue
+    # Remove the startup shortcut
+    if (Test-Path $startupLnk) {
+        Remove-Item -Path $startupLnk -Force -ErrorAction SilentlyContinue
     }
 
-    # Clean up legacy methods (old shortcut, registry entry, scheduled task)
-    $oldShortcut = Join-Path $startupFolder "$projectName.lnk"
-    if (Test-Path $oldShortcut) { Remove-Item -Path $oldShortcut -Force -ErrorAction SilentlyContinue }
+    # Clean up legacy methods (VBS launcher, registry entry, scheduled task)
+    if (Test-Path $legacyStartupVbs) { Remove-Item -Path $legacyStartupVbs -Force -ErrorAction SilentlyContinue }
     Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name $projectName -Force -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $projectName -Confirm:$false -ErrorAction SilentlyContinue
 
@@ -95,11 +96,16 @@ $scriptContent = @'
 # =============================================================================
 #  Terminal Heartbeat v2.0 - System Tray Client
 # =============================================================================
+# -Startup is passed by the Startup-folder shortcut. At logon the notification
+# area rejects tray icons for the first few seconds and an icon registered that
+# early is silently dropped, so that launch path waits before starting.
+param([switch]$Startup)
 
 $apiBase = "__API_BASE__"
 $projectName = "TerminalHeartbeat"
+$startupDelaySeconds = 25
 
-$script:dataFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:dataFolder = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $script:logFile = Join-Path $script:dataFolder "startup.log"
 
 function Write-Log {
@@ -127,6 +133,11 @@ $mutex = New-Object System.Threading.Mutex($false, "TerminalHeartbeatMutex")
 if (-not $mutex.WaitOne(0, $false)) {
     Write-Log "Another instance already running - exiting"
     exit
+}
+
+if ($Startup) {
+    Write-Log "Startup launch - waiting ${startupDelaySeconds}s for the notification area"
+    Start-Sleep -Seconds $startupDelaySeconds
 }
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -411,7 +422,7 @@ function Show-Popup {
     # Greeting
     $lblGreeting = New-Object System.Windows.Forms.Label
     $lblGreeting.Text = $greeting
-    $lblGreeting.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $lblGreeting.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 15, [System.Drawing.FontStyle]::Bold)
     $lblGreeting.ForeColor = [System.Drawing.Color]::FromArgb(220, 30, 50)
     $lblGreeting.BackColor = [System.Drawing.Color]::Transparent
     $lblGreeting.Location = New-Object System.Drawing.Point(56, 18)
@@ -469,31 +480,33 @@ function Invoke-Uninstall {
     Write-Log "Uninstall confirmed by user"
 
     $startupFolder = [Environment]::GetFolderPath("Startup")
-    $startupVbs = Join-Path $startupFolder "$projectName.vbs"
-    $legacyLnk = Join-Path $startupFolder "$projectName.lnk"
-    $helper = Join-Path $env:TEMP "$projectName-uninstall.vbs"
+    $startupLnk = Join-Path $startupFolder "$projectName.lnk"
+    $legacyVbs = Join-Path $startupFolder "$projectName.vbs"
+    $helper = Join-Path $env:TEMP "$projectName-uninstall.ps1"
+    $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
-    # VBScript doubles its own quotes; build the literal paths safely.
+    # Single-quoted literals in the helper; double any quote inside a path.
+    function ConvertTo-PsLiteral { param([string]$Value) "'" + $Value.Replace("'", "''") + "'" }
+    $qLnk    = ConvertTo-PsLiteral $startupLnk
+    $qVbs    = ConvertTo-PsLiteral $legacyVbs
+    $qFolder = ConvertTo-PsLiteral $script:dataFolder
+    $qName   = ConvertTo-PsLiteral $projectName
+
     $helperScript = @"
-Dim fso, shell
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set shell = CreateObject("WScript.Shell")
-
-' Wait for the heartbeat process to release its files
-WScript.Sleep 2500
-
-On Error Resume Next
-If fso.FileExists("$startupVbs") Then fso.DeleteFile "$startupVbs", True
-If fso.FileExists("$legacyLnk") Then fso.DeleteFile "$legacyLnk", True
-shell.RegDelete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\$projectName"
-shell.Run "schtasks /Delete /TN ""$projectName"" /F", 0, True
-If fso.FolderExists("$script:dataFolder") Then fso.DeleteFolder "$script:dataFolder", True
-fso.DeleteFile WScript.ScriptFullName, True
+Start-Sleep -Seconds 3
+Remove-Item -LiteralPath $qLnk -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $qVbs -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name $qName -Force -ErrorAction SilentlyContinue
+schtasks /Delete /TN $qName /F | Out-Null
+Remove-Item -LiteralPath $qFolder -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$PSCommandPath -Force -ErrorAction SilentlyContinue
 "@
 
     try {
-        $helperScript | Set-Content -Path $helper -Encoding ASCII -Force
-        Start-Process wscript.exe -ArgumentList "`"$helper`"" -WindowStyle Hidden
+        $helperScript | Set-Content -Path $helper -Encoding UTF8 -Force
+        Start-Process $powershellExe -ArgumentList `
+            "-ExecutionPolicy","Bypass","-NoProfile","-WindowStyle","Hidden","-File","`"$helper`"" `
+            -WindowStyle Hidden
     } catch {
         [System.Windows.Forms.MessageBox]::Show(
             "No se pudo completar la desinstalacion automatica.`n`nError: $($_.Exception.Message)",
@@ -610,18 +623,30 @@ $scriptContent = $scriptContent.Replace("__API_BASE__", $apiUrl)
 $scriptContent | Set-Content -Path $scriptPath -Encoding UTF8 -Force
 
 # =============================================================================
-#  CREATE STARTUP VBS (shell:startup)
+#  CREATE STARTUP SHORTCUT (shell:startup)
 # =============================================================================
-# VBS in Startup folder runs PowerShell completely hidden (no console flash).
-# At logon the notification area does not accept tray icons for the first few
-# seconds, so wait before launching. Passing any argument skips the wait, which
-# is what the installer does when it launches the app immediately.
-$vbsContent = @"
-Set objShell = CreateObject("WScript.Shell")
-If WScript.Arguments.Count = 0 Then WScript.Sleep 25000
-objShell.Run "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File ""$scriptPath""", 0, False
-"@
-$vbsContent | Set-Content -Path $startupVbs -Encoding ASCII -Force
+# A .lnk is the native Windows autostart mechanism: it launches powershell.exe
+# directly, so nothing depends on Windows Script Host being enabled. The
+# -Startup switch tells the client to wait for the notification area before
+# registering its tray icon.
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($startupLnk)
+$shortcut.TargetPath = $powershellExe
+$shortcut.Arguments = "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$scriptPath`" -Startup"
+$shortcut.WorkingDirectory = $folder
+$shortcut.WindowStyle = 7          # start minimized
+$shortcut.Description = "Terminal Heartbeat"
+$shortcut.IconLocation = "$powershellExe,0"
+$shortcut.Save()
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+
+if (-not (Test-Path $startupLnk)) {
+    Write-Host ""
+    Write-Host "  ERROR: no se pudo crear el acceso directo de inicio." -ForegroundColor Red
+    Write-Host "  Ruta: $startupLnk" -ForegroundColor DarkGray
+    Write-Host ""
+    exit 1
+}
 
 # =============================================================================
 #  CONFIRMATION
@@ -630,7 +655,7 @@ Write-Host ""
 Write-Host "  Instalacion completada." -ForegroundColor Green
 Write-Host ""
 Write-Host "  Archivos:   $folder" -ForegroundColor DarkGray
-Write-Host "  Autostart:  $startupVbs" -ForegroundColor DarkGray
+Write-Host "  Autostart:  $startupLnk" -ForegroundColor DarkGray
 Write-Host "  API:        $apiUrl" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  El corazon aparecera en tu bandeja del sistema" -ForegroundColor White
@@ -643,7 +668,8 @@ Write-Host ""
 # Ask if the user wants to launch it now
 $response = Read-Host "  Quieres probarlo ahora? (s/n)"
 if ($response -eq "s" -or $response -eq "S" -or $response -eq "si") {
-    Start-Process wscript.exe -ArgumentList "`"$startupVbs`"", "now"
+    # No -Startup switch here: launching by hand should be immediate.
+    Start-Process $powershellExe -ArgumentList "-ExecutionPolicy","Bypass","-NoProfile","-WindowStyle","Hidden","-File","`"$scriptPath`"" -WindowStyle Hidden
     Write-Host ""
     Write-Host "  Lanzado! Busca el corazon en la bandeja del sistema." -ForegroundColor Red
     Write-Host "  Si no lo ves, revisa la flecha ^ junto al reloj." -ForegroundColor DarkGray

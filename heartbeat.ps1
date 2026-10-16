@@ -1,11 +1,16 @@
 ﻿# =============================================================================
 #  Terminal Heartbeat v2.0 - System Tray Client
 # =============================================================================
+# -Startup is passed by the Startup-folder shortcut. At logon the notification
+# area rejects tray icons for the first few seconds and an icon registered that
+# early is silently dropped, so that launch path waits before starting.
+param([switch]$Startup)
 
 $apiBase = "https://web-three-pi-68.vercel.app"
 $projectName = "TerminalHeartbeat"
+$startupDelaySeconds = 25
 
-$script:dataFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:dataFolder = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $script:logFile = Join-Path $script:dataFolder "startup.log"
 
 function Write-Log {
@@ -33,6 +38,11 @@ $mutex = New-Object System.Threading.Mutex($false, "TerminalHeartbeatMutex")
 if (-not $mutex.WaitOne(0, $false)) {
     Write-Log "Another instance already running - exiting"
     exit
+}
+
+if ($Startup) {
+    Write-Log "Startup launch - waiting ${startupDelaySeconds}s for the notification area"
+    Start-Sleep -Seconds $startupDelaySeconds
 }
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -317,7 +327,7 @@ function Show-Popup {
     # Greeting
     $lblGreeting = New-Object System.Windows.Forms.Label
     $lblGreeting.Text = $greeting
-    $lblGreeting.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $lblGreeting.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 15, [System.Drawing.FontStyle]::Bold)
     $lblGreeting.ForeColor = [System.Drawing.Color]::FromArgb(220, 30, 50)
     $lblGreeting.BackColor = [System.Drawing.Color]::Transparent
     $lblGreeting.Location = New-Object System.Drawing.Point(56, 18)
@@ -375,31 +385,33 @@ function Invoke-Uninstall {
     Write-Log "Uninstall confirmed by user"
 
     $startupFolder = [Environment]::GetFolderPath("Startup")
-    $startupVbs = Join-Path $startupFolder "$projectName.vbs"
-    $legacyLnk = Join-Path $startupFolder "$projectName.lnk"
-    $helper = Join-Path $env:TEMP "$projectName-uninstall.vbs"
+    $startupLnk = Join-Path $startupFolder "$projectName.lnk"
+    $legacyVbs = Join-Path $startupFolder "$projectName.vbs"
+    $helper = Join-Path $env:TEMP "$projectName-uninstall.ps1"
+    $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
-    # VBScript doubles its own quotes; build the literal paths safely.
+    # Single-quoted literals in the helper; double any quote inside a path.
+    function ConvertTo-PsLiteral { param([string]$Value) "'" + $Value.Replace("'", "''") + "'" }
+    $qLnk    = ConvertTo-PsLiteral $startupLnk
+    $qVbs    = ConvertTo-PsLiteral $legacyVbs
+    $qFolder = ConvertTo-PsLiteral $script:dataFolder
+    $qName   = ConvertTo-PsLiteral $projectName
+
     $helperScript = @"
-Dim fso, shell
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set shell = CreateObject("WScript.Shell")
-
-' Wait for the heartbeat process to release its files
-WScript.Sleep 2500
-
-On Error Resume Next
-If fso.FileExists("$startupVbs") Then fso.DeleteFile "$startupVbs", True
-If fso.FileExists("$legacyLnk") Then fso.DeleteFile "$legacyLnk", True
-shell.RegDelete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\$projectName"
-shell.Run "schtasks /Delete /TN ""$projectName"" /F", 0, True
-If fso.FolderExists("$script:dataFolder") Then fso.DeleteFolder "$script:dataFolder", True
-fso.DeleteFile WScript.ScriptFullName, True
+Start-Sleep -Seconds 3
+Remove-Item -LiteralPath $qLnk -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $qVbs -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name $qName -Force -ErrorAction SilentlyContinue
+schtasks /Delete /TN $qName /F | Out-Null
+Remove-Item -LiteralPath $qFolder -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$PSCommandPath -Force -ErrorAction SilentlyContinue
 "@
 
     try {
-        $helperScript | Set-Content -Path $helper -Encoding ASCII -Force
-        Start-Process wscript.exe -ArgumentList "`"$helper`"" -WindowStyle Hidden
+        $helperScript | Set-Content -Path $helper -Encoding UTF8 -Force
+        Start-Process $powershellExe -ArgumentList `
+            "-ExecutionPolicy","Bypass","-NoProfile","-WindowStyle","Hidden","-File","`"$helper`"" `
+            -WindowStyle Hidden
     } catch {
         [System.Windows.Forms.MessageBox]::Show(
             "No se pudo completar la desinstalacion automatica.`n`nError: $($_.Exception.Message)",

@@ -14,7 +14,7 @@ A discreet system tray application for Windows that displays an animated heart i
 - **Offline Fallback** — Caches messages locally; works even without internet.
 - **Zero-Dependency** — Runs natively on Windows 10/11 PowerShell. No admin rights required.
 - **Auto-Startup** — Starts silently on every Windows login.
-- **Clean Uninstall** — Removes everything without leaving traces.
+- **One-Click Uninstall** — Right-click the heart → **Desinstalar** removes everything, no traces.
 
 ## Architecture
 
@@ -73,21 +73,30 @@ No manual cleanup needed. This works across any version (v1.0 → v2.0, v2.0 →
 
 ## Uninstallation
 
-To completely remove Terminal Heartbeat with no traces left:
+**From the tray icon (easiest — no files or terminal needed):**
+
+Right-click the heart → **Desinstalar** → confirm. Everything is removed immediately.
+
+Because the app runs from the folder it has to delete, the cleanup is handed to a
+small detached helper that waits for the process to exit, removes every trace, and
+then deletes itself.
+
+**From the installer:**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install_heart.ps1 -Uninstall
 ```
 
-This removes:
-- The auto-start registry entry (`HKCU\Run`)
-- The data folder (`%LOCALAPPDATA%\TerminalHeartbeat\`)
-- Kills the running process (if active)
+Either method removes:
+- The auto-start VBS from the Startup folder
+- The data folder (`%LOCALAPPDATA%\TerminalHeartbeat\`), including cache and log
+- Legacy traces from older versions (startup shortcut, `HKCU\Run` entry, scheduled task)
+- The running process
 
-**Manual uninstall** (if you don't have the installer):
+**Manual uninstall** (last resort):
 
 1. Close the heart (right-click tray icon → Cerrar).
-2. Press `Win + R`, type `regedit`, navigate to `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, delete `TerminalHeartbeat`.
+2. Press `Win + R`, type `shell:startup`, delete `TerminalHeartbeat.vbs`.
 3. Press `Win + R`, type `%localappdata%`, delete the `TerminalHeartbeat` folder.
 
 ## Updating Messages Remotely
@@ -112,6 +121,28 @@ Edit the `$apiUrl` variable at the top of `install_heart.ps1` before running it.
 ### Popup Style
 The popup uses a dark theme (background `#121212`, red accents `#dc1e32`, white text) with rounded corners and a subtle red border glow.
 
+## Startup Behavior
+
+Auto-start uses a `.vbs` launcher in the user's Startup folder (`shell:startup`), which
+runs PowerShell fully hidden — no console window, no flash.
+
+Two details matter for it to work reliably at logon:
+
+- **25-second delay.** At logon the notification area does not accept tray icons for the
+  first few seconds; an icon registered too early is silently dropped and never appears.
+  The launcher waits before starting. Passing any argument skips the wait
+  (`wscript TerminalHeartbeat.vbs now`), which is what the installer does when launching
+  immediately.
+- **The icon is created before any network call.** Messages load from the local cache
+  first, and the API fetch happens 3 seconds later on a timer. A slow or absent network
+  at boot can delay the *messages*, never the heart itself.
+
+If the heart does not appear, check `%LOCALAPPDATA%\TerminalHeartbeat\startup.log` — it
+records each launch, whether the cache or the API was used, and any fetch failure.
+
+> **Note:** New tray icons land in the overflow area in Windows 11. Click the `^` arrow
+> next to the clock and drag the heart onto the taskbar to keep it visible.
+
 ## Technical Details
 
 - **Client**: PowerShell 5.1 + .NET WinForms (`System.Windows.Forms.NotifyIcon`)
@@ -120,6 +151,12 @@ The popup uses a dark theme (background `#121212`, red accents `#dc1e32`, white 
 - **Console Hiding**: P/Invoke `kernel32.GetConsoleWindow` + `user32.ShowWindow(hwnd, SW_HIDE)`
 - **Backend**: Next.js 14 App Router + Vercel KV
 - **Auth**: Bearer token matching `ADMIN_PASSWORD` env var
+- **HTTP**: `WebClient` subclass with UTF-8 encoding and an 8s timeout — PowerShell 5.1's
+  `Invoke-RestMethod` decodes UTF-8 responses as Latin-1, mangling accents and emoji
+- **Single instance**: named `Mutex`, so overlapping launches exit instead of stacking icons
+- **Encoding**: both scripts are pure ASCII. PowerShell 5.1 reads BOM-less files as ANSI,
+  which turns a UTF-8 em dash into a smart quote and breaks string parsing — keeping the
+  sources ASCII makes them immune to however the files are copied
 
 ## Disclaimer
 

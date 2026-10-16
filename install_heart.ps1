@@ -1,5 +1,5 @@
-# =============================================================================
-#  Terminal Heartbeat v2.0 — Installer
+﻿# =============================================================================
+#  Terminal Heartbeat v2.0 - Installer
 #  Usage:
 #    Install:    powershell -ExecutionPolicy Bypass -File install_heart.ps1
 #    Uninstall:  powershell -ExecutionPolicy Bypass -File install_heart.ps1 -Uninstall
@@ -12,15 +12,14 @@ $projectName = "TerminalHeartbeat"
 $folder = "$env:USERPROFILE\AppData\Local\$projectName"
 $scriptName = "$projectName.ps1"
 $scriptPath = Join-Path $folder $scriptName
-$launcherPath = Join-Path $folder "launcher.vbs"
-$regKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$oldShortcutPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\$projectName.lnk"
+$startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+$startupVbs = Join-Path $startupFolder "$projectName.vbs"
 
 # --- API URL (change this to your Vercel deployment) ---
 $apiUrl = "https://web-three-pi-68.vercel.app"
 
 # =============================================================================
-#  CLEANUP — Kill running process + remove all files
+#  CLEANUP - Kill running process + remove all files
 # =============================================================================
 function Remove-HeartbeatInstallation {
     # Kill any running instance
@@ -43,13 +42,16 @@ function Remove-HeartbeatInstallation {
 
     Start-Sleep -Milliseconds 500
 
-    # Remove registry auto-start entry
-    Remove-ItemProperty -Path $regKey -Name $projectName -Force -ErrorAction SilentlyContinue
-
-    # Remove old-style startup shortcut (v2.0 legacy)
-    if (Test-Path $oldShortcutPath) {
-        Remove-Item -Path $oldShortcutPath -Force -ErrorAction SilentlyContinue
+    # Remove startup VBS
+    if (Test-Path $startupVbs) {
+        Remove-Item -Path $startupVbs -Force -ErrorAction SilentlyContinue
     }
+
+    # Clean up legacy methods (old shortcut, registry entry, scheduled task)
+    $oldShortcut = Join-Path $startupFolder "$projectName.lnk"
+    if (Test-Path $oldShortcut) { Remove-Item -Path $oldShortcut -Force -ErrorAction SilentlyContinue }
+    Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name $projectName -Force -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $projectName -Confirm:$false -ErrorAction SilentlyContinue
 
     # Remove data folder
     if (Test-Path $folder) {
@@ -70,10 +72,10 @@ if ($Uninstall) {
 }
 
 # =============================================================================
-#  INSTALL MODE — Clean previous version first
+#  INSTALL MODE - Clean previous version first
 # =============================================================================
 Write-Host ""
-Write-Host "  Terminal Heartbeat v2.0 — Instalador" -ForegroundColor Red
+Write-Host "  Terminal Heartbeat v2.0 - Instalador" -ForegroundColor Red
 Write-Host "  =====================================" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -91,17 +93,49 @@ New-Item -ItemType Directory -Path $folder | Out-Null
 # =============================================================================
 $scriptContent = @'
 # =============================================================================
-#  Terminal Heartbeat v2.0 — System Tray Client
+#  Terminal Heartbeat v2.0 - System Tray Client
 # =============================================================================
 
 $apiBase = "__API_BASE__"
+$projectName = "TerminalHeartbeat"
+
+$script:dataFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:logFile = Join-Path $script:dataFolder "startup.log"
+
+function Write-Log {
+    param([string]$Message)
+    try {
+        $line = "{0}  {1}" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $Message
+        Add-Content -Path $script:logFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+# Keep only the last 200 lines so the log never grows without bound
+try {
+    if (Test-Path $script:logFile) {
+        $existing = @(Get-Content $script:logFile -ErrorAction SilentlyContinue)
+        if ($existing.Count -gt 200) {
+            $existing[-200..-1] | Set-Content -Path $script:logFile -Encoding UTF8
+        }
+    }
+} catch {}
+
+Write-Log "=== Launch (PID $PID) ==="
+
+# --- Single Instance Check ---
+$mutex = New-Object System.Threading.Mutex($false, "TerminalHeartbeatMutex")
+if (-not $mutex.WaitOne(0, $false)) {
+    Write-Log "Another instance already running - exiting"
+    exit
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# --- Hide Console Window ---
+# --- Hide Console Window + HTTP client with a real timeout ---
 Add-Type @"
 using System;
+using System.Net;
 using System.Runtime.InteropServices;
 public class Win32 {
     [DllImport("kernel32.dll")]
@@ -110,6 +144,14 @@ public class Win32 {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")]
     public static extern bool DestroyIcon(IntPtr hIcon);
+}
+public class TimeoutWebClient : WebClient {
+    public int TimeoutMs = 8000;
+    protected override WebRequest GetWebRequest(Uri address) {
+        WebRequest r = base.GetWebRequest(address);
+        r.Timeout = TimeoutMs;
+        return r;
+    }
 }
 "@
 [Win32]::ShowWindow([Win32]::GetConsoleWindow(), 0) | Out-Null
@@ -161,7 +203,6 @@ $script:frameIndex = 0
 # =============================================================================
 #  DATA FETCHING & CACHE
 # =============================================================================
-$script:dataFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:cacheFile = Join-Path $script:dataFolder "cache.json"
 
 $script:defaultData = @{
@@ -180,7 +221,7 @@ $script:defaultData = @{
 
 function Invoke-Utf8Rest {
     param([string]$Uri)
-    $wc = New-Object System.Net.WebClient
+    $wc = New-Object TimeoutWebClient
     $wc.Encoding = [System.Text.Encoding]::UTF8
     try {
         $json = $wc.DownloadString($Uri)
@@ -188,7 +229,30 @@ function Invoke-Utf8Rest {
     } finally { $wc.Dispose() }
 }
 
-function Get-HeartData {
+# Local-only: never touches the network, so it is safe to call during startup.
+function Get-CachedData {
+    if (Test-Path $script:cacheFile) {
+        try {
+            $cached = Get-Content $script:cacheFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $data = @{
+                messages  = @($cached.messages)
+                greetings = @{
+                    morning   = @($cached.greetings.morning)
+                    afternoon = @($cached.greetings.afternoon)
+                    night     = @($cached.greetings.night)
+                }
+            }
+            if ($data.messages.Count -gt 0) {
+                Write-Log "Loaded cache ($($data.messages.Count) messages)"
+                return $data
+            }
+        } catch { Write-Log "Cache unreadable: $($_.Exception.Message)" }
+    }
+    Write-Log "Using built-in defaults"
+    return $script:defaultData
+}
+
+function Update-HeartData {
     try {
         $msgResp = Invoke-Utf8Rest -Uri "$apiBase/api/messages"
         $grtResp = Invoke-Utf8Rest -Uri "$apiBase/api/greetings"
@@ -201,24 +265,16 @@ function Get-HeartData {
             }
             lastFetch = (Get-Date).ToString("o")
         }
+        if ($data.messages.Count -eq 0) {
+            Write-Log "API returned no messages - keeping current data"
+            return
+        }
         $data | ConvertTo-Json -Depth 5 | Set-Content -Path $script:cacheFile -Encoding UTF8 -Force
-        return $data
+        $script:heartData = $data
+        Write-Log "Fetched $($data.messages.Count) messages from API"
     }
     catch {
-        if (Test-Path $script:cacheFile) {
-            try {
-                $cached = Get-Content $script:cacheFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                return @{
-                    messages  = @($cached.messages)
-                    greetings = @{
-                        morning   = @($cached.greetings.morning)
-                        afternoon = @($cached.greetings.afternoon)
-                        night     = @($cached.greetings.night)
-                    }
-                }
-            } catch {}
-        }
-        return $script:defaultData
+        Write-Log "Fetch failed: $($_.Exception.Message)"
     }
 }
 
@@ -229,7 +285,7 @@ function Get-TimePeriod {
     else { return "night" }
 }
 
-$script:heartData = Get-HeartData
+$script:heartData = Get-CachedData
 $script:currentPopup = $null
 
 # =============================================================================
@@ -393,14 +449,76 @@ function Show-Popup {
 }
 
 # =============================================================================
+#  UNINSTALL
+# =============================================================================
+# The script lives inside the folder it has to delete, so the actual cleanup is
+# handed to a detached helper that waits for this process to exit first.
+function Invoke-Uninstall {
+    $answer = [System.Windows.Forms.MessageBox]::Show(
+        "Esto eliminara Terminal Heartbeat por completo de este equipo:`n`n" +
+        "  - El arranque automatico`n" +
+        "  - Todos los archivos y mensajes guardados`n`n" +
+        "No quedara ningun rastro. Continuar?",
+        "Desinstalar Terminal Heartbeat",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+    )
+    if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+    Write-Log "Uninstall confirmed by user"
+
+    $startupFolder = [Environment]::GetFolderPath("Startup")
+    $startupVbs = Join-Path $startupFolder "$projectName.vbs"
+    $legacyLnk = Join-Path $startupFolder "$projectName.lnk"
+    $helper = Join-Path $env:TEMP "$projectName-uninstall.vbs"
+
+    # VBScript doubles its own quotes; build the literal paths safely.
+    $helperScript = @"
+Dim fso, shell
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+
+' Wait for the heartbeat process to release its files
+WScript.Sleep 2500
+
+On Error Resume Next
+If fso.FileExists("$startupVbs") Then fso.DeleteFile "$startupVbs", True
+If fso.FileExists("$legacyLnk") Then fso.DeleteFile "$legacyLnk", True
+shell.RegDelete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\$projectName"
+shell.Run "schtasks /Delete /TN ""$projectName"" /F", 0, True
+If fso.FolderExists("$script:dataFolder") Then fso.DeleteFolder "$script:dataFolder", True
+fso.DeleteFile WScript.ScriptFullName, True
+"@
+
+    try {
+        $helperScript | Set-Content -Path $helper -Encoding ASCII -Force
+        Start-Process wscript.exe -ArgumentList "`"$helper`"" -WindowStyle Hidden
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No se pudo completar la desinstalacion automatica.`n`nError: $($_.Exception.Message)",
+            "Terminal Heartbeat",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+        return
+    }
+
+    $notifyIcon.Visible = $false
+    $notifyIcon.Dispose()
+    [System.Windows.Forms.Application]::Exit()
+}
+
+# =============================================================================
 #  NOTIFY ICON
 # =============================================================================
 $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
 $notifyIcon.Icon = $script:icons[1]
 $notifyIcon.Visible = $true
 $notifyIcon.Text = "Terminal Heartbeat"
+Write-Log "Tray icon created"
 
-# Context menu — only Close
+# Context menu - only Close
 $contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
 $contextMenu.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $contextMenu.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
@@ -410,11 +528,21 @@ $menuClose = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuClose.Text = "Cerrar"
 $menuClose.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
 $menuClose.Add_Click({
+    Write-Log "Closed by user"
     $notifyIcon.Visible = $false
     $notifyIcon.Dispose()
     [System.Windows.Forms.Application]::Exit()
 })
 [void]$contextMenu.Items.Add($menuClose)
+
+[void]$contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$menuUninstall = New-Object System.Windows.Forms.ToolStripMenuItem
+$menuUninstall.Text = "Desinstalar"
+$menuUninstall.ForeColor = [System.Drawing.Color]::FromArgb(220, 30, 50)
+$menuUninstall.Add_Click({ Invoke-Uninstall })
+[void]$contextMenu.Items.Add($menuUninstall)
+
 $notifyIcon.ContextMenuStrip = $contextMenu
 
 # Left-click = open popup
@@ -437,15 +565,41 @@ $animTimer.Add_Tick({
 })
 $animTimer.Start()
 
+# First fetch runs after the icon is already visible, so a slow or missing
+# network at boot can never delay or prevent the heart from appearing.
+$initialFetchTimer = New-Object System.Windows.Forms.Timer
+$initialFetchTimer.Interval = 3000
+$initialFetchTimer.Add_Tick({
+    $initialFetchTimer.Stop()
+    Update-HeartData
+})
+$initialFetchTimer.Start()
+
 # Refresh data every hour
 $refreshTimer = New-Object System.Windows.Forms.Timer
 $refreshTimer.Interval = 3600000
-$refreshTimer.Add_Tick({ $script:heartData = Get-HeartData })
+$refreshTimer.Add_Tick({ Update-HeartData })
 $refreshTimer.Start()
+
+# At logon the notification area may not accept icons yet, and an Explorer
+# restart silently drops them. Re-assert visibility over the first minute.
+$script:visibilityChecks = 0
+$visibilityTimer = New-Object System.Windows.Forms.Timer
+$visibilityTimer.Interval = 5000
+$visibilityTimer.Add_Tick({
+    $script:visibilityChecks++
+    if (-not $notifyIcon.Visible) {
+        Write-Log "Tray icon was not visible - re-registering (attempt $script:visibilityChecks)"
+        $notifyIcon.Visible = $true
+    }
+    if ($script:visibilityChecks -ge 12) { $visibilityTimer.Stop() }
+})
+$visibilityTimer.Start()
 
 # =============================================================================
 #  RUN
 # =============================================================================
+Write-Log "Entering message loop"
 [System.Windows.Forms.Application]::Run()
 '@
 
@@ -456,22 +610,18 @@ $scriptContent = $scriptContent.Replace("__API_BASE__", $apiUrl)
 $scriptContent | Set-Content -Path $scriptPath -Encoding UTF8 -Force
 
 # =============================================================================
-#  CREATE VBS LAUNCHER + REGISTRY AUTO-START
+#  CREATE STARTUP VBS (shell:startup)
 # =============================================================================
-# VBS launcher runs PowerShell completely hidden (no console flash)
+# VBS in Startup folder runs PowerShell completely hidden (no console flash).
+# At logon the notification area does not accept tray icons for the first few
+# seconds, so wait before launching. Passing any argument skips the wait, which
+# is what the installer does when it launches the app immediately.
 $vbsContent = @"
 Set objShell = CreateObject("WScript.Shell")
-objShell.Run "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File """ & Replace(WScript.ScriptFullName, "launcher.vbs", "$scriptName") & """", 0, False
+If WScript.Arguments.Count = 0 Then WScript.Sleep 25000
+objShell.Run "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File ""$scriptPath""", 0, False
 "@
-$vbsContent | Set-Content -Path $launcherPath -Encoding ASCII -Force
-
-# Remove old-style startup shortcut if upgrading
-if (Test-Path $oldShortcutPath) {
-    Remove-Item -Path $oldShortcutPath -Force -ErrorAction SilentlyContinue
-}
-
-# Register in HKCU\Run (standard Windows auto-start, no admin needed)
-Set-ItemProperty -Path $regKey -Name $projectName -Value "wscript.exe `"$launcherPath`"" -Force
+$vbsContent | Set-Content -Path $startupVbs -Encoding ASCII -Force
 
 # =============================================================================
 #  CONFIRMATION
@@ -480,7 +630,7 @@ Write-Host ""
 Write-Host "  Instalacion completada." -ForegroundColor Green
 Write-Host ""
 Write-Host "  Archivos:   $folder" -ForegroundColor DarkGray
-Write-Host "  Autostart:  Registro HKCU\Run" -ForegroundColor DarkGray
+Write-Host "  Autostart:  $startupVbs" -ForegroundColor DarkGray
 Write-Host "  API:        $apiUrl" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  El corazon aparecera en tu bandeja del sistema" -ForegroundColor White
@@ -493,8 +643,9 @@ Write-Host ""
 # Ask if the user wants to launch it now
 $response = Read-Host "  Quieres probarlo ahora? (s/n)"
 if ($response -eq "s" -or $response -eq "S" -or $response -eq "si") {
-    Start-Process wscript.exe -ArgumentList "`"$launcherPath`""
+    Start-Process wscript.exe -ArgumentList "`"$startupVbs`"", "now"
     Write-Host ""
     Write-Host "  Lanzado! Busca el corazon en la bandeja del sistema." -ForegroundColor Red
+    Write-Host "  Si no lo ves, revisa la flecha ^ junto al reloj." -ForegroundColor DarkGray
     Write-Host ""
 }

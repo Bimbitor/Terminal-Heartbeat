@@ -48,6 +48,18 @@ if ($Startup) {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Route UI-thread exceptions to our own handler instead of the .NET crash dialog.
+# This must run before any Control exists, so it stays here at the top. Without
+# it, a single drawing hiccup shows an error box and takes the heart down.
+try {
+    [System.Windows.Forms.Application]::SetUnhandledExceptionMode(
+        [System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+    [System.Windows.Forms.Application]::add_ThreadException({
+        param($s, $e)
+        try { Write-Log "UI exception (ignored): $($e.Exception.Message)" } catch {}
+    })
+} catch {}
+
 # --- Hide Console Window + HTTP client with a real timeout ---
 Add-Type @"
 using System;
@@ -253,13 +265,20 @@ function Show-Popup {
     $path.CloseFigure()
     $popup.Region = New-Object System.Drawing.Region($path)
 
-    # Paint: border glow + large heart watermark
+    # Paint: border glow + large heart watermark.
+    # Everything here is decorative. A reentrant event can hand the handler
+    # unbound arguments, so the sender and Graphics are resolved defensively and
+    # the whole body is guarded: the popup must still show its text if the
+    # decoration cannot be drawn, and must never take the application down.
     $popup.Add_Paint({
         param($s, $e)
-        $g = $e.Graphics
+        $form = if ($s) { $s } elseif ($this) { $this } else { $null }
+        $g = if ($e) { $e.Graphics } else { $null }
+        if ($null -eq $g -or $null -eq $form) { return }
+        try {
         $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-        $w = $s.ClientSize.Width
-        $h = $s.ClientSize.Height
+        $w = $form.ClientSize.Width
+        $h = $form.ClientSize.Height
 
         # Draw large decorative heart (watermark, bottom-right)
         $heartPoints = New-Object System.Collections.ArrayList
@@ -297,6 +316,9 @@ function Show-Popup {
         $accentPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 220, 30, 50), 3)
         $g.DrawLine($accentPen, 30, 0, ($w - 30), 0)
         $accentPen.Dispose()
+        } catch {
+            Write-Log "Popup decoration skipped: $($_.Exception.Message)"
+        }
     })
 
     # Close button (X)
@@ -466,8 +488,12 @@ $notifyIcon.ContextMenuStrip = $contextMenu
 # Left-click = open popup
 $notifyIcon.Add_MouseClick({
     param($s, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        Show-Popup
+    try {
+        if ($e -and $e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+            Show-Popup
+        }
+    } catch {
+        Write-Log "Show-Popup failed: $($_.Exception.Message)"
     }
 })
 

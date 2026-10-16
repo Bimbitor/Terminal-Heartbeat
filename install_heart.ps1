@@ -5,7 +5,8 @@
 #    Uninstall:  powershell -ExecutionPolicy Bypass -File install_heart.ps1 -Uninstall
 # =============================================================================
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$LaunchNow
 )
 
 $projectName = "TerminalHeartbeat"
@@ -81,7 +82,7 @@ Write-Host "  =====================================" -ForegroundColor DarkGray
 Write-Host ""
 
 # Remove any previous installation (v1.0, v2.x, etc.)
-if ((Test-Path $folder) -or (Test-Path $shortcutPath)) {
+if ((Test-Path $folder) -or (Test-Path $startupLnk) -or (Test-Path $legacyStartupVbs)) {
     Write-Host "  Limpiando version anterior..." -ForegroundColor Yellow
     Remove-HeartbeatInstallation
 }
@@ -665,8 +666,11 @@ Write-Host "  Para desinstalar:" -ForegroundColor DarkGray
 Write-Host "  powershell -ExecutionPolicy Bypass -File install_heart.ps1 -Uninstall" -ForegroundColor DarkGray
 Write-Host ""
 
-# Ask if the user wants to launch it now
-$response = Read-Host "  Quieres probarlo ahora? (s/n)"
+# Ask if the user wants to launch it now. -LaunchNow skips the prompt, which is
+# what an unattended run needs since Read-Host throws without a console.
+$response = if ($LaunchNow) { "s" } else {
+    try { Read-Host "  Quieres probarlo ahora? (s/n)" } catch { "n" }
+}
 if ($response -eq "s" -or $response -eq "S" -or $response -eq "si") {
     # No -Startup switch here: launching by hand should be immediate.
     Start-Process $powershellExe -ArgumentList "-ExecutionPolicy","Bypass","-NoProfile","-WindowStyle","Hidden","-File","`"$scriptPath`"" -WindowStyle Hidden

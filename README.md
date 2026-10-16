@@ -88,9 +88,9 @@ powershell -ExecutionPolicy Bypass -File install_heart.ps1 -Uninstall
 ```
 
 Either method removes:
-- The auto-start VBS from the Startup folder
+- The startup shortcut from the Startup folder
 - The data folder (`%LOCALAPPDATA%\TerminalHeartbeat\`), including cache and log
-- Legacy traces from older versions (startup shortcut, `HKCU\Run` entry, scheduled task)
+- Legacy traces from older versions (`.vbs` launcher, `HKCU\Run` entry, scheduled task)
 - The running process
 
 **Manual uninstall** (last resort):
@@ -147,6 +147,27 @@ records each launch, whether the cache or the API was used, and any fetch failur
 > **Note:** New tray icons land in the overflow area in Windows 11. Click the `^` arrow
 > next to the clock and drag the heart onto the taskbar to keep it visible.
 
+## Troubleshooting
+
+`%LOCALAPPDATA%\TerminalHeartbeat\startup.log` is the first place to look. It records
+every launch with a timestamp, whether messages came from the cache or the API, and any
+error that was recovered from.
+
+| Symptom | What it means | Fix |
+|---|---|---|
+| No log entry after a reboot | The client never started — Windows could not run the shortcut, or the script it points at is missing | Confirm `%LOCALAPPDATA%\TerminalHeartbeat\TerminalHeartbeat.ps1` exists, then re-run the installer |
+| Log shows `Tray icon created` but nothing is visible | The icon is in the overflow area | Click the `^` arrow by the clock and drag the heart onto the taskbar |
+| Log shows `Fetch failed` | No network, or the API is unreachable | Harmless — cached messages are used. Check `$apiUrl` if it persists |
+| Log shows `Another instance already running` | A copy is already live | Expected; the mutex is doing its job |
+| Messages are stale | The client refreshes hourly | Right-click → Cerrar and relaunch to refresh immediately |
+
+**Installing from an unusual host.** Run the installer from an ordinary PowerShell
+window. Sandboxed or packaged hosts (for example a terminal running inside an MSIX app)
+redirect writes to `%LOCALAPPDATA%` into a private per-app folder, so the files appear
+to install correctly while Windows never sees them — the shortcut is then created
+pointing at a script that does not exist outside the sandbox, and nothing starts at
+logon. Right-click → **Run with PowerShell** avoids this entirely.
+
 ## Technical Details
 
 - **Client**: PowerShell 5.1 + .NET WinForms (`System.Windows.Forms.NotifyIcon`)
@@ -161,6 +182,17 @@ records each launch, whether the cache or the API was used, and any fetch failur
 - **Encoding**: both scripts are pure ASCII. PowerShell 5.1 reads BOM-less files as ANSI,
   which turns a UTF-8 em dash into a smart quote and breaks string parsing — keeping the
   sources ASCII makes them immune to however the files are copied
+- **Fault tolerance**: UI-thread exceptions are routed to a logging handler rather than
+  the default .NET crash dialog, and the popup's decorative drawing is isolated. A
+  rendering failure costs the watermark, never the heart
+
+The client is maintained in `heartbeat.ps1`; `install_heart.ps1` embeds a copy of it so
+the installer stays a single portable file. The embedded copy is generated from the
+source rather than edited by hand, so the two cannot drift apart.
+
+## Version History
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Disclaimer
 

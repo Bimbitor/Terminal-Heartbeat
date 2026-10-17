@@ -384,6 +384,11 @@ function Show-Popup {
     # Activate properly so Deactivate fires
     $popup.Show()
     $popup.Activate()
+
+    if ($script:popupRefreshTimer) {
+        $script:popupRefreshTimer.Stop()
+        $script:popupRefreshTimer.Start()
+    }
 }
 
 # =============================================================================
@@ -464,6 +469,26 @@ $contextMenu.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $contextMenu.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
 $contextMenu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System
 
+$menuRefresh = New-Object System.Windows.Forms.ToolStripMenuItem
+$menuRefresh.Text = "Actualizar mensajes"
+$menuRefresh.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
+$menuRefresh.Add_Click({
+    try {
+        Update-HeartData
+        $count = @($script:heartData.messages).Count
+        $notifyIcon.ShowBalloonTip(3000, "Terminal Heartbeat",
+            "$count mensajes disponibles.", [System.Windows.Forms.ToolTipIcon]::None)
+    } catch {
+        Write-Log "Manual refresh failed: $($_.Exception.Message)"
+        $notifyIcon.ShowBalloonTip(3000, "Terminal Heartbeat",
+            "No se pudo conectar. Se mantienen los mensajes guardados.",
+            [System.Windows.Forms.ToolTipIcon]::None)
+    }
+})
+[void]$contextMenu.Items.Add($menuRefresh)
+
+[void]$contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
 $menuClose = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuClose.Text = "Cerrar"
 $menuClose.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
@@ -519,11 +544,22 @@ $initialFetchTimer.Add_Tick({
 })
 $initialFetchTimer.Start()
 
-# Refresh data every hour
+# Periodic refresh. Fifteen minutes rather than an hour: edits made in the admin
+# panel should show up while you are still at the keyboard, not an hour later.
 $refreshTimer = New-Object System.Windows.Forms.Timer
-$refreshTimer.Interval = 3600000
+$refreshTimer.Interval = 900000
 $refreshTimer.Add_Tick({ Update-HeartData })
 $refreshTimer.Start()
+
+# Opening the popup also schedules a refresh, so reading a message is enough to
+# pull in recent edits for the next one. It runs after the popup is on screen so
+# the fetch never delays it.
+$script:popupRefreshTimer = New-Object System.Windows.Forms.Timer
+$script:popupRefreshTimer.Interval = 1500
+$script:popupRefreshTimer.Add_Tick({
+    $script:popupRefreshTimer.Stop()
+    Update-HeartData
+})
 
 # At logon the notification area may not accept icons yet, and an Explorer
 # restart silently drops them. Re-assert visibility over the first minute.

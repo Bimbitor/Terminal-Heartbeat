@@ -61,6 +61,25 @@ PC (PowerShell)                          Vercel (Free Tier)
 
 > **Note:** If Windows SmartScreen blocks the script, right-click the file → Properties → check **Unblock**.
 
+## Recovering Messages From an Existing Install
+
+If a machine is running an older version whose messages were customised and no longer
+exist anywhere else, recover them **before** running the installer — the installer
+removes the previous version's folder, and the messages live inside it.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\recuperar_frases.ps1
+```
+
+It only reads. It pulls messages from the v1.0 script's embedded list (parsed with
+PowerShell's own parser rather than executed) and from a v2.0 `cache.json` if present,
+removes duplicates and writes `frases_recuperadas.txt` to the Desktop in UTF-8, so
+accents and emoji survive the trip. Pass `-Carpeta` if the install is not in the default
+location.
+
+Copying `%LOCALAPPDATA%\TerminalHeartbeat\` wholesale beforehand costs nothing and is
+worth doing anyway.
+
 ## Updating
 
 To update to a newer version, simply **run the installer again**. It will:
